@@ -4,6 +4,7 @@ from pathlib import Path
 import cv2 as cv
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.ndimage import maximum_filter
 
 
 ROOT = Path(__file__).resolve().parent
@@ -141,5 +142,160 @@ def validate_synthetic_circle():
     return result
 
 
+def scale_space_extrema(scale_space, sigmas, response_threshold):
+    if len(sigmas) < 3 or scale_space.shape[2] != len(sigmas):
+        raise ValueError("Scale-space needs at least three matching sigma values")
+    if response_threshold <= 0:
+        raise ValueError("The response threshold must be positive")
+
+    local_maxima = maximum_filter(scale_space, size=3, mode="nearest")
+    maxima = (scale_space == local_maxima) & (scale_space >= response_threshold)
+    maxima[:, :, 0] = False
+    maxima[:, :, -1] = False
+    coordinates = np.argwhere(maxima)
+    return sorted(
+        coordinates, key=lambda point: float(scale_space[tuple(point)]), reverse=True
+    )
+
+
+def yellow_ring_fraction(yellow_mask, x, y, radius, outer_radius_factor):
+    height, width = yellow_mask.shape
+    half_width = int(np.ceil(outer_radius_factor * radius))
+    x0, x1 = max(0, x - half_width), min(width, x + half_width + 1)
+    y0, y1 = max(0, y - half_width), min(height, y + half_width + 1)
+    rows, columns = np.ogrid[y0:y1, x0:x1]
+    squared_distance = (columns - x) ** 2 + (rows - y) ** 2
+    ring = (squared_distance > radius**2) & (
+        squared_distance <= (outer_radius_factor * radius) ** 2
+    )
+    return float(yellow_mask[y0:y1, x0:x1][ring].mean())
+
+
+def detect_sunflowers():
+    image_path = ROOT / "images" / "the_berry_farms_sunflower_field.jpeg"
+    image = cv.imread(str(image_path), cv.IMREAD_REDUCED_COLOR_4)
+    if image is None:
+        raise FileNotFoundError(f"Cannot load image: {image_path.name}")
+
+    gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY).astype(np.float32) / 255.0
+    sigmas = np.arange(1.0, 12.5, 0.5)
+    response_threshold = 0.22
+    minimum_yellow_fraction = 0.35
+    outer_radius_factor = 2.2
+    minimum_separation_factor = 0.6
+    hsv_lower = [15, 100, 120]
+    hsv_upper = [38, 255, 255]
+
+    scale_space = build_scale_space(gray, sigmas)
+    candidates = scale_space_extrema(scale_space, sigmas, response_threshold)
+    hsv = cv.cvtColor(image, cv.COLOR_BGR2HSV)
+    yellow_mask = cv.inRange(hsv, np.array(hsv_lower), np.array(hsv_upper)) > 0
+    height, width = gray.shape
+    circles = []
+
+    for row, column, scale_index in candidates:
+        x, y = int(column), int(row)
+        sigma = float(sigmas[scale_index])
+        radius = float(np.sqrt(2) * sigma)
+        if x < radius or y < radius or x + radius >= width or y + radius >= height:
+            continue
+
+        yellow_fraction = yellow_ring_fraction(
+            yellow_mask, x, y, radius, outer_radius_factor
+        )
+        if yellow_fraction < minimum_yellow_fraction:
+            continue
+        if any(
+            np.hypot(x - circle["x"], y - circle["y"])
+            < minimum_separation_factor * (radius + circle["radius"])
+            for circle in circles
+        ):
+            continue
+
+        circles.append(
+            {
+                "x": x,
+                "y": y,
+                "radius": radius,
+                "sigma": sigma,
+                "response": float(scale_space[row, column, scale_index]),
+                "yellow_ring_fraction": yellow_fraction,
+            }
+        )
+
+    circles.sort(key=lambda circle: (-circle["radius"], -circle["response"]))
+    if not circles:
+        raise RuntimeError("No sunflower blobs passed the detection thresholds")
+
+    result = {
+        "image": image_path.name,
+        "image_size_hw": [height, width],
+        "coordinate_system": "pixels in the reduced image",
+        "original_image_scale_factor": 4,
+        "blob_polarity": "dark flower centres",
+        "radius_definition": "sqrt(2) * sigma; excludes the outer petals",
+        "sigma_values": sigmas.tolist(),
+        "response_threshold": response_threshold,
+        "yellow_hsv_lower": hsv_lower,
+        "yellow_hsv_upper": hsv_upper,
+        "minimum_yellow_ring_fraction": minimum_yellow_fraction,
+        "ring_outer_radius_factor": outer_radius_factor,
+        "minimum_separation_factor": minimum_separation_factor,
+        "exclude_boundary_scales": True,
+        "exclude_clipped_circles": True,
+        "candidate_count": len(candidates),
+        "detected_count": len(circles),
+        "largest_circles": circles[:5],
+        "circles": circles,
+    }
+    output_dir = ROOT / "results" / "q1"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "sunflower_circles.json").write_text(
+        json.dumps(result, indent=2) + "\n", encoding="utf-8"
+    )
+
+    rgb = cv.cvtColor(image, cv.COLOR_BGR2RGB)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 6), layout="constrained")
+    axes[0].imshow(rgb)
+    axes[0].set_title("Input sunflower image (360 x 360)")
+    axes[1].imshow(rgb)
+    axes[1].set_title(f"{len(circles)} dark-centre blobs; five largest in orange")
+    for index, circle in enumerate(circles):
+        color = "#ff8c00" if index < 5 else "#00ff99"
+        axes[1].add_patch(
+            plt.Circle(
+                (circle["x"], circle["y"]),
+                circle["radius"],
+                fill=False,
+                color=color,
+                linewidth=1.2 if index < 5 else 0.7,
+            )
+        )
+        if index < 5:
+            axes[1].text(
+                circle["x"] + circle["radius"] + 1,
+                circle["y"],
+                str(index + 1),
+                color=color,
+                fontsize=9,
+                weight="bold",
+            )
+    for axis in axes:
+        axis.set_axis_off()
+    fig.savefig(output_dir / "sunflower_detection.png", dpi=180)
+    plt.close(fig)
+
+    print(f"Sunflower image: {width} x {height}")
+    print(f"Sigma range: {sigmas[0]:g} to {sigmas[-1]:g}, step 0.5")
+    print(f"Detected dark-centre blobs: {len(circles)}")
+    for index, circle in enumerate(circles[:5], start=1):
+        print(
+            f"{index}: center=({circle['x']}, {circle['y']}), "
+            f"radius={circle['radius']:.2f}, sigma={circle['sigma']:g}"
+        )
+    return result
+
+
 if __name__ == "__main__":
     validate_synthetic_circle()
+    detect_sunflowers()
