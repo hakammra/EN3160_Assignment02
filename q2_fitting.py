@@ -3,6 +3,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.optimize import minimize
 
 
 ROOT = Path(__file__).resolve().parent
@@ -157,5 +158,172 @@ def run_line_fitting():
     return points, result
 
 
+def circle_from_points(points):
+    offsets = points[1:] - points[0]
+    matrix = 2 * offsets
+    if np.linalg.cond(matrix) > 1e8:
+        raise ValueError("The circle sample is too close to a straight line")
+    right = np.sum(offsets**2, axis=1)
+    relative_center = np.linalg.solve(matrix, right)
+    center = points[0] + relative_center
+    radius = np.linalg.norm(relative_center)
+    model = np.append(center, radius)
+    if not np.isfinite(model).all() or radius < 1e-10:
+        raise ValueError("The circle sample is invalid")
+    return model
+
+
+def circle_errors(points, model):
+    return np.abs(np.linalg.norm(points - model[:2], axis=1) - model[2])
+
+
+def fit_circle(points, initial_model):
+    def objective(model):
+        residuals = np.linalg.norm(points - model[:2], axis=1) - model[2]
+        return float(residuals @ residuals)
+
+    result = minimize(
+        objective,
+        initial_model,
+        method="L-BFGS-B",
+        bounds=[(None, None), (None, None), (1e-8, None)],
+        options={"ftol": 1e-12, "gtol": 1e-7, "maxiter": 300},
+    )
+    if not result.success or not np.isfinite(result.x).all():
+        raise RuntimeError("Circle refinement did not converge")
+    return result.x
+
+
+def ransac_circle(points, threshold=1.25, minimum_inliers=30, iterations=500, seed=2):
+    points = np.asarray(points, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 2 or len(points) < 3:
+        raise ValueError("Provide at least three points with x and y coordinates")
+    if not np.isfinite(points).all():
+        raise ValueError("Point coordinates must be finite")
+    if threshold <= 0 or not 3 <= minimum_inliers <= len(points) or iterations < 1:
+        raise ValueError("Invalid RANSAC parameters")
+
+    rng = np.random.default_rng(seed)
+    best = None
+    best_score = (-1, -np.inf)
+    for iteration in range(iterations):
+        sample = rng.choice(len(points), 3, replace=False)
+        try:
+            sample_model = circle_from_points(points[sample])
+        except (ValueError, np.linalg.LinAlgError):
+            continue
+        sample_mask = circle_errors(points, sample_model) <= threshold
+        if sample_mask.sum() < minimum_inliers:
+            continue
+
+        inliers = sample_mask.copy()
+        model = sample_model.copy()
+        try:
+            for _ in range(10):
+                model = fit_circle(points[inliers], model)
+                updated = circle_errors(points, model) <= threshold
+                if updated.sum() < minimum_inliers or np.array_equal(updated, inliers):
+                    break
+                inliers = updated
+        except RuntimeError:
+            continue
+        errors = circle_errors(points, model)
+        inliers = errors <= threshold
+        count = int(inliers.sum())
+        if count < minimum_inliers:
+            continue
+        mean_squared_error = float(np.mean(errors[inliers] ** 2))
+        score = (count, -mean_squared_error)
+        if score > best_score:
+            best_score = score
+            best = {
+                "model": model,
+                "sample_model": sample_model,
+                "sample_indices": sample,
+                "sample_inlier_indices": np.flatnonzero(sample_mask),
+                "inlier_indices": np.flatnonzero(inliers),
+                "inlier_count": count,
+                "inlier_rmse": float(np.sqrt(mean_squared_error)),
+                "winning_iteration": iteration + 1,
+                "threshold": threshold,
+                "minimum_inliers": minimum_inliers,
+                "iterations": iterations,
+                "seed": seed,
+            }
+    if best is None:
+        raise RuntimeError("No circle reached the required consensus")
+    return best
+
+
+def run_circle_fitting(points, line_result):
+    remaining_indices = np.setdiff1d(np.arange(len(points)), line_result["inlier_indices"])
+    result = ransac_circle(points[remaining_indices])
+    for name in ("sample_indices", "sample_inlier_indices", "inlier_indices"):
+        result[name] = remaining_indices[result[name]]
+    result["remaining_point_indices"] = remaining_indices
+    result["input_point_count"] = len(remaining_indices)
+    output_dir = ROOT / "results" / "q2"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    save_result(output_dir / "circle_fit.json", {"data_seed": 0, **result})
+
+    fig, axis = plt.subplots(figsize=(11, 8), layout="constrained")
+    axis.scatter(*points.T, s=24, color="0.7", label="All points")
+    axis.scatter(
+        *points[line_result["inlier_indices"]].T,
+        s=25,
+        color="tab:blue",
+        label="Line inliers",
+    )
+    axis.scatter(
+        *points[result["inlier_indices"]].T,
+        s=25,
+        color="tab:orange",
+        label="Circle inliers",
+    )
+    axis.scatter(
+        *points[line_result["sample_indices"]].T,
+        s=90,
+        marker="x",
+        color="tab:red",
+        label="Winning line sample",
+        zorder=5,
+    )
+    axis.scatter(
+        *points[result["sample_indices"]].T,
+        s=90,
+        marker="x",
+        color="tab:purple",
+        label="Winning circle sample",
+        zorder=5,
+    )
+    plot_line(axis, line_result["sample_model"], "Sample line", "tab:blue", "dotted")
+    plot_line(axis, line_result["model"], "Refined line", "tab:blue")
+    for model, label, color, style in (
+        (result["sample_model"], "Sample circle", "tab:orange", "dotted"),
+        (result["model"], "Refined circle", "tab:orange", "solid"),
+        (np.array([2, 3, 10]), "True circle", "0.4", "dashed"),
+    ):
+        axis.add_patch(
+            plt.Circle(
+                model[:2], model[2], fill=False, label=label, color=color, linestyle=style
+            )
+        )
+    plot_line(axis, np.array([1, 1, 2]) / np.sqrt(2), "True line", "0.4", "dashed")
+    axis.set(xlim=(-15, 15), ylim=(-14, 17), xlabel="x", ylabel="y")
+    axis.set_aspect("equal")
+    axis.set_title("Line and circle fitting with RANSAC")
+    axis.grid(alpha=0.2)
+    axis.legend(loc="upper left", bbox_to_anchor=(1.02, 1), fontsize=9)
+    fig.savefig(output_dir / "line_and_circle.png", dpi=180)
+    plt.close(fig)
+
+    print(f"Remaining points: {len(remaining_indices)}")
+    print(f"Circle model (x, y, radius): {result['model']}")
+    print(f"Circle inliers: {result['inlier_count']} of {len(remaining_indices)}")
+    print(f"Circle inlier RMSE: {result['inlier_rmse']:.4f}")
+    return result
+
+
 if __name__ == "__main__":
-    run_line_fitting()
+    points, line_result = run_line_fitting()
+    run_circle_fitting(points, line_result)
