@@ -109,11 +109,16 @@ def plot_line(axis, model, label, color, linestyle="solid"):
 
 
 def save_result(path, result):
-    values = {
-        key: value.tolist() if isinstance(value, np.ndarray) else value
-        for key, value in result.items()
-    }
-    path.write_text(json.dumps(values, indent=2) + "\n", encoding="utf-8")
+    def convert(value):
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        raise TypeError(f"Cannot save {type(value).__name__}")
+
+    path.write_text(
+        json.dumps(result, indent=2, default=convert) + "\n", encoding="utf-8"
+    )
 
 
 def run_line_fitting():
@@ -324,6 +329,129 @@ def run_circle_fitting(points, line_result):
     return result
 
 
+def fit_circle_then_line(points):
+    circle = ransac_circle(points)
+    circle["input_point_count"] = len(points)
+    remaining = np.setdiff1d(np.arange(len(points)), circle["inlier_indices"])
+    line = None
+    failure = None
+    if len(remaining) < 40:
+        failure = "Too few points remain for the minimum line consensus of 40"
+    else:
+        try:
+            line = ransac_line(points[remaining])
+        except RuntimeError as error:
+            failure = str(error)
+    if line is not None:
+        for name in ("sample_indices", "sample_inlier_indices", "inlier_indices"):
+            line[name] = remaining[line[name]]
+        line["input_point_count"] = len(remaining)
+        line["remaining_point_indices"] = remaining
+    return {
+        "circle": circle,
+        "line": line,
+        "remaining_point_indices": remaining,
+        "line_failure": failure,
+    }
+
+
+def plot_fitting_order(axis, points, line, circle, title):
+    axis.scatter(*points.T, s=22, color="0.75", label="All points")
+    for result, label, color, sample_color in (
+        (line, "Line", "tab:blue", "tab:red"),
+        (circle, "Circle", "tab:orange", "tab:purple"),
+    ):
+        if result is None:
+            continue
+        axis.scatter(
+            *points[result["inlier_indices"]].T,
+            s=25,
+            color=color,
+            label=f"{label} inliers",
+        )
+        axis.scatter(
+            *points[result["sample_indices"]].T,
+            s=85,
+            marker="x",
+            color=sample_color,
+            label=f"Winning {label.lower()} sample",
+            zorder=5,
+        )
+        for model_name, model_label, style in (
+            ("sample_model", f"Sample {label.lower()}", "dotted"),
+            ("model", f"Refined {label.lower()}", "solid"),
+        ):
+            model = result[model_name]
+            if label == "Line":
+                plot_line(axis, model, model_label, color, style)
+            else:
+                axis.add_patch(
+                    plt.Circle(
+                        model[:2], model[2], fill=False,
+                        label=model_label, color=color, linestyle=style,
+                    )
+                )
+    if line is None:
+        axis.text(0.5, 0.04, "No line consensus", ha="center", transform=axis.transAxes)
+    axis.set(xlim=(-15, 15), ylim=(-14, 17), xlabel="x", ylabel="y", title=title)
+    axis.set_aspect("equal")
+    axis.grid(alpha=0.2)
+
+
+def save_order_comparison(points, line, circle, reverse):
+    orders = (
+        ("Line then circle", line, circle, circle["input_point_count"]),
+        ("Circle then line", reverse["line"], reverse["circle"], len(reverse["remaining_point_indices"])),
+    )
+    summary = []
+    evaluation = {}
+    for name, line_result, circle_result, remaining_count in orders:
+        summary.append({
+            "order": name,
+            "line_inliers": None if line_result is None else line_result["inlier_count"],
+            "circle_inliers": circle_result["inlier_count"],
+            "points_for_second_model": remaining_count,
+            "line_inlier_rmse": None if line_result is None else line_result["inlier_rmse"],
+            "circle_inlier_rmse": circle_result["inlier_rmse"],
+            "line_model": None if line_result is None else line_result["model"],
+            "circle_model": circle_result["model"],
+        })
+        line_indices = np.array([]) if line_result is None else np.asarray(line_result["inlier_indices"])
+        circle_indices = np.asarray(circle_result["inlier_indices"])
+        evaluation[name] = {
+            "generated_line_points_in_line_consensus": int(np.sum(line_indices >= 50)),
+            "generated_circle_points_in_line_consensus": int(np.sum(line_indices < 50)),
+            "generated_circle_points_in_circle_consensus": int(np.sum(circle_indices < 50)),
+            "generated_line_points_in_circle_consensus": int(np.sum(circle_indices >= 50)),
+        }
+
+    result = {
+        "data_seed": 0,
+        "point_count": len(points),
+        "line_then_circle": {"line": line, "circle": circle},
+        "circle_then_line": reverse,
+        "summary": summary,
+        "post_fit_evaluation": evaluation,
+    }
+    output_dir = ROOT / "results" / "q2"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    save_result(output_dir / "fitting_order_comparison.json", result)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 8))
+    plot_fitting_order(axes[0], points, line, circle, "Line then circle")
+    plot_fitting_order(axes[1], points, reverse["line"], reverse["circle"], "Circle then line")
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=4, fontsize=10)
+    fig.tight_layout(rect=(0, 0.12, 1, 1))
+    fig.savefig(output_dir / "fitting_order_comparison.png", dpi=180)
+    plt.close(fig)
+    return result
+
+
 if __name__ == "__main__":
     points, line_result = run_line_fitting()
-    run_circle_fitting(points, line_result)
+    circle_result = run_circle_fitting(points, line_result)
+    reverse = fit_circle_then_line(points)
+    comparison = save_order_comparison(points, line_result, circle_result, reverse)
+    for row in comparison["summary"]:
+        print(f"{row['order']}: line inliers {row['line_inliers']}, circle inliers {row['circle_inliers']}")
