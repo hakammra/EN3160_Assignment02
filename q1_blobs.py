@@ -29,7 +29,7 @@ def normalized_log_kernel(sigma):
 def build_scale_space(image, sigmas):
     image = np.asarray(image, dtype=np.float32)
     if image.ndim != 2:
-        raise ValueError("Scale-space input must be a grayscale image")
+        raise ValueError("Scale space input must be a grayscale image")
     if len(sigmas) == 0:
         raise ValueError("At least one sigma is required")
 
@@ -67,7 +67,7 @@ def validate_synthetic_circle():
     radius_error = abs(estimated_radius - radius)
 
     if center_error > 1 or radius_error > 1:
-        raise RuntimeError("Synthetic-circle scale selection failed")
+        raise RuntimeError("Synthetic circle scale selection failed")
     if scale_index == 0 or scale_index == len(sigmas) - 1:
         raise RuntimeError("Selected sigma is at the boundary of the search range")
 
@@ -97,7 +97,7 @@ def validate_synthetic_circle():
     kernel_plot = axes[0].imshow(
         normalized_log_kernel(selected_sigma), cmap="RdBu_r"
     )
-    axes[0].set_title(f"Scale-normalized LoG, sigma = {selected_sigma:g}")
+    axes[0].set_title(f"Scale normalized LoG, sigma = {selected_sigma:g}")
     axes[0].set_axis_off()
     fig.colorbar(kernel_plot, ax=axes[0], shrink=0.8)
 
@@ -138,13 +138,13 @@ def validate_synthetic_circle():
     print(f"Estimated radius: {estimated_radius:.4f} pixels")
     print(f"True radius: {radius} pixels")
     print(f"Radius error: {radius_error:.4f} pixels")
-    print("Synthetic-circle validation passed.")
+    print("Synthetic circle validation passed.")
     return result
 
 
 def scale_space_extrema(scale_space, sigmas, response_threshold):
     if len(sigmas) < 3 or scale_space.shape[2] != len(sigmas):
-        raise ValueError("Scale-space needs at least three matching sigma values")
+        raise ValueError("Scale space needs at least three matching sigma values")
     if response_threshold <= 0:
         raise ValueError("The response threshold must be positive")
 
@@ -259,7 +259,7 @@ def detect_sunflowers():
     axes[0].imshow(rgb)
     axes[0].set_title("Input sunflower image (360 x 360)")
     axes[1].imshow(rgb)
-    axes[1].set_title(f"{len(circles)} dark-centre blobs; five largest in orange")
+    axes[1].set_title(f"{len(circles)} dark centre blobs; five largest in orange")
     for index, circle in enumerate(circles):
         color = "#ff8c00" if index < 5 else "#00ff99"
         axes[1].add_patch(
@@ -287,7 +287,7 @@ def detect_sunflowers():
 
     print(f"Sunflower image: {width} x {height}")
     print(f"Sigma range: {sigmas[0]:g} to {sigmas[-1]:g}, step 0.5")
-    print(f"Detected dark-centre blobs: {len(circles)}")
+    print(f"Detected dark centre blobs: {len(circles)}")
     for index, circle in enumerate(circles[:5], start=1):
         print(
             f"{index}: center=({circle['x']}, {circle['y']}), "
