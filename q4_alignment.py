@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import cv2 as cv
+import matplotlib.pyplot as plt
 import numpy as np
 
 
@@ -112,5 +113,63 @@ def run_matching():
     return summary
 
 
+def warp_and_difference(image, reference, homography):
+    homography = np.asarray(homography, dtype=np.float64)
+    if homography.shape != (3, 3) or not np.isfinite(homography).all() or np.linalg.matrix_rank(homography) != 3:
+        raise ValueError("A finite homography of rank three is required")
+    size = (reference.shape[1], reference.shape[0])
+    warped = cv.warpPerspective(image, homography, size, flags=cv.INTER_LINEAR)
+    support = cv.warpPerspective(np.ones(image.shape[:2], np.float32), homography, size, flags=cv.INTER_LINEAR)
+    valid = support >= 1 - 1e-6
+    if not valid.any():
+        raise ValueError("The warped image has no valid overlap with the reference")
+    warped_gray = cv.cvtColor(warped, cv.COLOR_BGR2GRAY)
+    reference_gray = cv.cvtColor(reference, cv.COLOR_BGR2GRAY)
+    difference = cv.absdiff(warped_gray, reference_gray)
+    difference[~valid] = 0
+    return warped, difference, valid
+
+
+def save_alignment_view(reference, warped, difference, valid, name, path):
+    fig, axes = plt.subplots(1, 3, figsize=(12, 5), layout="constrained")
+    axes[0].imshow(cv.cvtColor(reference, cv.COLOR_BGR2RGB))
+    axes[0].set_title("Reference AECC1")
+    axes[1].imshow(cv.cvtColor(warped, cv.COLOR_BGR2RGB))
+    axes[1].set_title(f"Aligned {name}")
+    colormap = plt.get_cmap("gray").with_extremes(bad="lightgray")
+    view = axes[2].imshow(np.ma.array(difference, mask=~valid), cmap=colormap, vmin=0, vmax=255)
+    axes[2].set_title("Absolute gray difference")
+    fig.colorbar(view, ax=axes[2], shrink=0.6, ticks=[0, 128, 255])
+    for axis in axes:
+        axis.axis("off")
+    fig.supxlabel("Gray areas in the difference image have no source image coverage", fontsize=10)
+    fig.savefig(path, dpi=110, pil_kwargs={"quality": 88})
+    plt.close(fig)
+
+
+def run_alignment():
+    cv.setNumThreads(2)
+    image_dir = ROOT / "images/pcbs"
+    output_dir = ROOT / "results/q4"
+    reference = cv.imread(str(image_dir / "AECC1.jpg"))
+    if reference is None:
+        raise FileNotFoundError("AECC1.jpg is required as the reference image")
+    if any(not (output_dir / f"{Path(name).stem}_homography.json").exists() for name in PCB_NAMES):
+        run_matching()
+    for name in PCB_NAMES:
+        image = cv.imread(str(image_dir / name))
+        if image is None:
+            raise FileNotFoundError(name)
+        stem = Path(name).stem
+        record = json.loads((output_dir / f"{stem}_homography.json").read_text())
+        warped, difference, valid = warp_and_difference(image, reference, record["homography"])
+        cv.imwrite(str(output_dir / f"{stem}_warped.png"), warped)
+        cv.imwrite(str(output_dir / f"{stem}_difference.png"), difference)
+        cv.imwrite(str(output_dir / f"{stem}_valid_mask.png"), valid.astype(np.uint8) * 255)
+        save_alignment_view(reference, warped, difference, valid, stem, output_dir / f"{stem}_alignment.jpg")
+    return PCB_NAMES.copy()
+
+
 if __name__ == "__main__":
     run_matching()
+    run_alignment()
