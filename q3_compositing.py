@@ -83,45 +83,50 @@ def composite_overlay(background, overlay, corners, opacity=0.75):
     return np.clip(np.round(result), 0, 255).astype(np.uint8), homography, coverage
 
 
-def run_compositing(select=False, points_path=None):
-    background = cv.imread(str(ROOT / "images/wadham.jpg"))
-    overlay = cv.imread(str(ROOT / "images/flag.png"), cv.IMREAD_UNCHANGED)
-    if background is None or overlay is None:
-        raise FileNotFoundError("The background and flag images are required")
+def run_compositing(select=False, points_path=None, name="wadham"):
+    if not name or Path(name).name != name:
+        raise ValueError("Provide a simple output name")
     output_dir = ROOT / "results/q3"
     output_dir.mkdir(parents=True, exist_ok=True)
-    points_path = Path(points_path) if points_path else output_dir / "wadham_points.json"
+    points_path = Path(points_path) if points_path else output_dir / f"{name}_points.json"
+    selection = json.loads(points_path.read_text()) if points_path.exists() else {}
+    background_path = selection.get("background", "images/wadham.jpg")
+    overlay_path = selection.get("overlay", "images/flag.png")
+    background = cv.imread(str(ROOT / background_path))
+    overlay = cv.imread(str(ROOT / overlay_path), cv.IMREAD_UNCHANGED)
+    if background is None or overlay is None:
+        raise FileNotFoundError("The background and overlay images are required")
     if select:
         corners = select_corners(background)
-    elif points_path.exists():
-        corners = json.loads(points_path.read_text())["corners"]
     else:
-        corners = DEFAULT_CORNERS
+        corners = selection.get("corners", DEFAULT_CORNERS)
     corners = validate_corners(corners, background.shape)
-    opacity = 0.75
+    opacity = selection.get("opacity", 0.75)
     composite, homography, coverage = composite_overlay(background, overlay, corners, opacity)
     record = {
-        "background": "images/wadham.jpg",
-        "overlay": "images/flag.png",
+        "background": background_path,
+        "overlay": overlay_path,
         "corner_order": ["top left", "top right", "bottom right", "bottom left"],
         "corners": corners.tolist(),
         "opacity": opacity,
         "homography": homography.tolist(),
     }
     points_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
-    cv.imwrite(str(output_dir / "wadham_composite.png"), composite)
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4.8), layout="constrained")
+    cv.imwrite(str(output_dir / f"{name}_composite.png"), composite)
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5), layout="constrained")
     axes[0].imshow(cv.cvtColor(background, cv.COLOR_BGR2RGB))
     closed = np.vstack((corners, corners[0]))
     axes[0].plot(closed[:, 0], closed[:, 1], "yo-", linewidth=1.5)
     for index, point in enumerate(corners, 1):
         axes[0].text(*point, str(index), color="red", fontsize=12)
-    axes[0].set_title("Selected wall corners")
-    axes[1].imshow(cv.cvtColor(composite, cv.COLOR_BGR2RGB))
-    axes[1].set_title("Blended result")
+    axes[0].set_title("Selected surface corners")
+    axes[1].imshow(cv.cvtColor(overlay, cv.COLOR_BGRA2RGBA if overlay.shape[2] == 4 else cv.COLOR_BGR2RGB))
+    axes[1].set_title("Overlay image")
+    axes[2].imshow(cv.cvtColor(composite, cv.COLOR_BGR2RGB))
+    axes[2].set_title("Blended result")
     for axis in axes:
         axis.axis("off")
-    fig.savefig(output_dir / "wadham_comparison.jpg", dpi=120, pil_kwargs={"quality": 90})
+    fig.savefig(output_dir / f"{name}_comparison.jpg", dpi=120, pil_kwargs={"quality": 90})
     plt.close(fig)
     return record
 
@@ -130,5 +135,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--select", action="store_true")
     parser.add_argument("--points", type=Path)
+    parser.add_argument("--name", default="wadham")
     arguments = parser.parse_args()
-    run_compositing(arguments.select, arguments.points)
+    run_compositing(arguments.select, arguments.points, arguments.name)

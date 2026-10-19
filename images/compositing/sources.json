@@ -1,0 +1,27 @@
+{
+  "collection": "OpenCV sample images",
+  "version": "4.12.0",
+  "repository_license": "Apache License 2.0",
+  "images": [
+    {
+      "file": "box_in_scene.png",
+      "source": "https://raw.githubusercontent.com/opencv/opencv/4.12.0/samples/data/box_in_scene.png",
+      "sha256": "8b0225ff76244a42bd1400c0904f8b7afea7d97b7d8115495e42e98ad347bd51"
+    },
+    {
+      "file": "graf1.png",
+      "source": "https://raw.githubusercontent.com/opencv/opencv/4.12.0/samples/data/graf1.png",
+      "sha256": "1504b769303c7bde00fa578eeaad3c68e02aceabeb1242e556f1f8d19e4bdea5"
+    },
+    {
+      "file": "fruits.jpg",
+      "source": "https://raw.githubusercontent.com/opencv/opencv/4.12.0/samples/data/fruits.jpg",
+      "sha256": "9c031d80a1c52da5eca790db896baffec6a7e52bf786cdb7bbfca5c7f880e6a1"
+    },
+    {
+      "file": "butterfly.jpg",
+      "source": "https://raw.githubusercontent.com/opencv/opencv/4.12.0/samples/data/butterfly.jpg",
+      "sha256": "34a99716b78ded10eae87b4880de739d3e68cc7dd1a96812bb28f469d5eeaea8"
+    }
+  ]
+}
